@@ -1,5 +1,7 @@
 # affinecap
 
+[![CI](https://github.com/Elkku988/Affinecap/actions/workflows/ci.yml/badge.svg)](https://github.com/Elkku988/Affinecap/actions/workflows/ci.yml)
+
 **One-shot runtime authority for Python.**
 
 Python makes aliases freely. That is usually helpful, but it is awkward when
@@ -50,7 +52,7 @@ dynamic affine-style behavior; it does **not** add linear types to Python.
 - Capabilities cannot be transferred between processes or survive restart.
 
 The precise guarantee tiers and threat model are in the
-[semantic contract](https://github.com/Elkku988/affinecap/blob/main/docs/semantics.md).
+[semantic contract](https://github.com/Elkku988/Affinecap/blob/main/docs/semantics.md).
 
 ## Installation
 
@@ -110,7 +112,7 @@ authoritative identities. The private authority coordinate is never included.
 
 ## Realistic example
 
-[`examples/deployment_approval.py`](https://github.com/Elkku988/affinecap/blob/main/examples/deployment_approval.py)
+[`examples/deployment_approval.py`](https://github.com/Elkku988/Affinecap/blob/main/examples/deployment_approval.py)
 places an
 actual deployment action behind a trusted approval function, transfers its
 handle to a worker, and demonstrates that the approver's old alias can no
@@ -121,7 +123,7 @@ python examples/deployment_approval.py
 ```
 
 The smaller executable version of the opening example is
-[`examples/minimal.py`](https://github.com/Elkku988/affinecap/blob/main/examples/minimal.py).
+[`examples/minimal.py`](https://github.com/Elkku988/Affinecap/blob/main/examples/minimal.py).
 
 ## Design notes
 
@@ -138,7 +140,7 @@ Dropping an unused handle is allowed—that is why the model is affine rather
 than linear. A weak-reference callback releases the registry's payload
 reference on a best-effort basis.
 
-See [prior art](https://github.com/Elkku988/affinecap/blob/main/docs/prior-art.md)
+See [prior art](https://github.com/Elkku988/Affinecap/blob/main/docs/prior-art.md)
 for comparisons with static affine/linear
 systems, object-capability patterns, `contextvars.Token`, state-machine
 libraries, and once primitives.
@@ -151,7 +153,7 @@ a larger scientific pipeline. The standalone package retains the reusable
 runtime mechanism and removes Solana schemas, RPC behavior, artifact layouts,
 file-descriptor custody, and pipeline-specific transition graphs. The detailed
 extraction map is in
-[the ancestry note](https://github.com/Elkku988/affinecap/blob/main/docs/rg-ancestry.md).
+[the ancestry note](https://github.com/Elkku988/Affinecap/blob/main/docs/rg-ancestry.md).
 
 ## Development
 
