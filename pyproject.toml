@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "affinecap"
+version = "0.1.0"
+description = "Runtime affine-style capability handles for Python"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "affinecap contributors"}]
+keywords = ["affine", "capability", "ownership", "single-use", "typestate"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Typing :: Typed",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Elkku988/affinecap"
+Repository = "https://github.com/Elkku988/affinecap"
+Issues = "https://github.com/Elkku988/affinecap/issues"
+Changelog = "https://github.com/Elkku988/affinecap/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+quality = ["mypy>=1.10,<2", "ruff>=0.9,<1"]
+build = ["build>=1.2,<2", "twine>=5,<7"]
+dev = [
+  "build>=1.2,<2",
+  "mypy>=1.10,<2",
+  "pytest>=8,<10",
+  "ruff>=0.9,<1",
+  "twine>=5,<7",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+affinecap = ["py.typed"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers --strict-config"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src", "examples"]
