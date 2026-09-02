@@ -55,4 +55,6 @@ jobs:
       - run: twine check dist/*
       - run: python -m venv /tmp/affinecap-wheel-smoke
       - run: /tmp/affinecap-wheel-smoke/bin/python -m pip install --no-deps dist/*.whl
-      - run: cd /tmp && /tmp/affinecap-wheel-smoke/bin/python -c "from affinecap import issue; assert issue(20).consume(lambda value: value + 22) == 42"
+      - run: |
+          cd /tmp
+          /tmp/affinecap-wheel-smoke/bin/python -c 'from affinecap import issue; assert issue(20).consume(lambda value: value + 22) == 42'
