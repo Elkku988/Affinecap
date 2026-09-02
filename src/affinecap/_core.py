@@ -75,27 +75,19 @@ class _Claim(Generic[T]):
     epoch: object
 
 
-_CONSTRUCTION_KEY = object()
-
-
 @final
 class Capability(Generic[T]):
     """An opaque, process-bound handle with at most one successful claim.
 
     Create capabilities with :func:`issue`. Normal construction, subclassing,
-    copying, and pickling are intentionally unavailable.
+    and default copying and pickling are intentionally unavailable.
     """
 
     __slots__ = ("__epoch", "__pid", "__token", "__weakref__")
 
-    def __new__(cls, *, _key: object | None = None) -> Capability[Any]:
-        if cls is not Capability or _key is not _CONSTRUCTION_KEY:
-            raise TypeError("capabilities are created only by affinecap.issue()")
-        return cast("Capability[Any]", super().__new__(cls))
-
-    def __init__(self, *, _key: object | None = None) -> None:
-        if _key is not _CONSTRUCTION_KEY:
-            raise TypeError("capabilities are created only by affinecap.issue()")
+    def __new__(cls) -> Capability[Any]:
+        del cls
+        raise TypeError("capabilities are created only by affinecap.issue()")
 
     def __init_subclass__(cls, **kwargs: Any) -> NoReturn:
         del kwargs
@@ -276,13 +268,16 @@ class _Runtime:
         if self._pid != pid:
             raise CapabilityProcessError("runtime process changed during issuance")
         epoch = self._epoch
-        handle = cast("Capability[T]", Capability(_key=_CONSTRUCTION_KEY))
-        with self._lock:
-            if self._pid != pid or self._epoch is not epoch:
-                raise CapabilityProcessError("runtime process changed during issuance")
+        handle = cast("Capability[T]", object.__new__(Capability))
+
+        # Everything below that creates a GC-tracked object is deliberately
+        # prepared before taking the non-reentrant registry lock. In
+        # particular, cyclic collection can invoke an older handle's weakref
+        # callback synchronously; that callback also needs the registry lock.
+        # The critical section is consequently limited to exact built-in
+        # lookups, comparisons, and one dictionary insertion.
+        while True:
             token = secrets.token_hex(32)
-            while token in self._records:
-                token = secrets.token_hex(32)
             object.__setattr__(handle, "_Capability__token", token)
             object.__setattr__(handle, "_Capability__pid", pid)
             object.__setattr__(handle, "_Capability__epoch", epoch)
@@ -303,8 +298,17 @@ class _Runtime:
                 pid=pid,
                 epoch=epoch,
             )
-            self._records[token] = record
-        return handle
+
+            with self._lock:
+                process_changed = self._pid != pid or self._epoch is not epoch
+                collision = token in self._records
+                if not process_changed and not collision:
+                    self._records[token] = record
+
+            if process_changed:
+                raise CapabilityProcessError("runtime process changed during issuance")
+            if not collision:
+                return handle
 
     def _abandon(
         self,
@@ -322,14 +326,37 @@ class _Runtime:
     def snapshot(self, handle: Capability[Any]) -> tuple[LineageEntry, ...]:
         token, pid, epoch = self._validate_coordinates(handle)
         with self._lock:
-            record = self._require_record_locked(handle, token, pid, epoch)
-            return record.lineage
+            record = self._records.get(token)
+            integrity_failure = record is not None and (
+                record.pid != pid
+                or record.epoch is not epoch
+                or record.handle_ref() is not handle
+            )
+        if record is None:
+            raise CapabilityConsumedError("capability has already been consumed")
+        if integrity_failure:
+            raise CapabilityIntegrityError(
+                "capability is not the exact live handle issued by this runtime"
+            )
+        return record.lineage
 
     def claim(self, handle: Capability[T]) -> _Claim[T]:
         token, pid, epoch = self._validate_coordinates(handle)
         with self._lock:
-            record = self._require_record_locked(handle, token, pid, epoch)
-            del self._records[token]
+            record = self._records.get(token)
+            integrity_failure = record is not None and (
+                record.pid != pid
+                or record.epoch is not epoch
+                or record.handle_ref() is not handle
+            )
+            if record is not None and not integrity_failure:
+                del self._records[token]
+        if record is None:
+            raise CapabilityConsumedError("capability has already been consumed")
+        if integrity_failure:
+            raise CapabilityIntegrityError(
+                "capability is not the exact live handle issued by this runtime"
+            )
         return _Claim(
             payload=cast("T", record.payload),
             lineage=record.lineage,
@@ -348,26 +375,6 @@ class _Runtime:
                 "capability belongs to a different runtime epoch"
             )
         return token, pid, epoch
-
-    def _require_record_locked(
-        self,
-        handle: Capability[Any],
-        token: str,
-        pid: int,
-        epoch: object,
-    ) -> _Record:
-        record = self._records.get(token)
-        if record is None:
-            raise CapabilityConsumedError("capability has already been consumed")
-        if (
-            record.pid != pid
-            or record.epoch is not epoch
-            or record.handle_ref() is not handle
-        ):
-            raise CapabilityIntegrityError(
-                "capability is not the exact live handle issued by this runtime"
-            )
-        return record
 
     def require_claim_process(self, claim: _Claim[Any]) -> None:
         if (
@@ -391,8 +398,8 @@ if hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_RUNTIME.reset_after_fork)
 
 
-def issue(payload: T, *, label: str | None = None) -> Capability[T]:
-    """Issue one process-local affine-style capability for ``payload``."""
+def issue(value: T, *, label: str | None = None) -> Capability[T]:
+    """Issue one interpreter-local, process-bound capability for ``value``."""
 
     _validate_label(label)
-    return _RUNTIME.issue(payload, label=label)
+    return _RUNTIME.issue(value, label=label)

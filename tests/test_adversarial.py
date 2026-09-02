@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import copy
+import inspect
+import io
 import pickle
+import subprocess
+import sys
+import textwrap
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -19,6 +24,10 @@ from affinecap import (
 def test_normal_construction_is_rejected() -> None:
     with pytest.raises(TypeError, match="created only"):
         Capability()  # type: ignore[call-arg]
+
+
+def test_public_constructor_signature_exposes_no_internal_bypass() -> None:
+    assert not inspect.signature(Capability).parameters
 
 
 def test_runtime_subclassing_is_rejected() -> None:
@@ -42,6 +51,32 @@ def test_shallow_copy_deepcopy_and_every_pickle_protocol_are_rejected() -> None:
     assert cap.consume(tuple) == ("payload",)
 
 
+def test_custom_copy_and_pickle_paths_can_only_recover_an_existing_alias() -> None:
+    cap = issue("payload")
+
+    deep_alias = copy.deepcopy(cap, {id(cap): cap})
+
+    class AliasPickler(pickle.Pickler):
+        def persistent_id(self, value: object) -> str | None:
+            return "existing-capability" if value is cap else None
+
+    class AliasUnpickler(pickle.Unpickler):
+        def persistent_load(self, persistent_id: object) -> object:
+            assert persistent_id == "existing-capability"
+            return cap
+
+    stream = io.BytesIO()
+    AliasPickler(stream).dump(cap)
+    stream.seek(0)
+    pickle_alias = AliasUnpickler(stream).load()
+
+    assert deep_alias is cap
+    assert pickle_alias is cap
+    assert deep_alias.consume(lambda value: value) == "payload"
+    with pytest.raises(CapabilityConsumedError):
+        pickle_alias.consume(lambda value: value)
+
+
 def test_forged_shell_with_cloned_slots_has_no_authority() -> None:
     cap = issue("registered")
     forged = object.__new__(Capability)
@@ -62,6 +97,76 @@ def test_incomplete_reconstructed_shell_is_rejected() -> None:
 
     with pytest.raises(CapabilityIntegrityError, match="malformed"):
         forged.consume(lambda value: value)
+
+
+def test_cyclic_gc_during_issuance_cannot_deadlock_weakref_cleanup() -> None:
+    program = textwrap.dedent(
+        """
+        import gc
+
+        import affinecap._core as core
+        from affinecap import issue
+
+
+        class Cycle:
+            pass
+
+
+        gc.collect()
+        gc.disable()
+        abandoned = issue(object())
+        cycle = Cycle()
+        cycle.self = cycle
+        cycle.capability = abandoned
+        del abandoned, cycle
+
+        original_token_hex = core.secrets.token_hex
+
+
+        def collect_before_registry_token(nbytes=None):
+            if nbytes == 32:
+                assert gc.collect() >= 1
+            return original_token_hex(nbytes)
+
+
+        core.secrets.token_hex = collect_before_registry_token
+        fresh = issue("fresh")
+        assert fresh.consume(lambda value: value) == "fresh"
+        print("completed", flush=True)
+        """
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", program],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "completed\n"
+
+
+def test_private_registry_token_collision_retries_without_stealing_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import affinecap._core as core
+
+    original_token_hex = core.secrets.token_hex
+    private_tokens = iter(("a" * 64, "a" * 64, "b" * 64))
+
+    def collide_once(nbytes: int | None = None) -> str:
+        if nbytes == 32:
+            return next(private_tokens)
+        return original_token_hex(nbytes)
+
+    monkeypatch.setattr(core.secrets, "token_hex", collide_once)
+    first = issue("first")
+    second = issue("second")
+
+    assert first.consume(lambda value: value) == "first"
+    assert second.consume(lambda value: value) == "second"
 
 
 def test_reentrant_consume_observes_pre_callback_claim() -> None:

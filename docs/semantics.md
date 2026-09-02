@@ -1,8 +1,9 @@
 # Semantic contract
 
-`affinecap` provides process-local, affine-style handles for Python values. A
-handle is an ordinary Python object, but the value and the authority to claim
-its release through this library live in a private runtime registry. The
+`affinecap` provides interpreter-local, affine-style handles for Python values.
+A handle is an ordinary Python object, but the value and the authority to
+claim its release through this library live in a private registry. Each handle
+is also bound to its issuing process ID and interpreter runtime epoch. The
 registry accepts only the exact handle object that it issued.
 
 The library is a runtime coordination primitive. It is not a Python type-system
@@ -16,29 +17,40 @@ result = cap.consume(consumer)
 ```
 
 - `issue(value)` creates one live capability.
-- `consume(consumer)` atomically spends the capability, then invokes
-  `consumer(value)` in the winning call's current execution path.
+- `consume(consumer)` atomically spends the capability, then synchronously
+  invokes `consumer(value)` in the winning call's current execution path.
 - `transfer()` atomically spends the old handle and returns a new handle for
   the same value.
-- `transition(transform)` atomically spends the old handle, invokes
-  `transform(value)`, and, if it returns, issues a new handle for the returned
-  value.
+- `transition(transform)` atomically spends the old handle, synchronously
+  invokes `transform(value)`, and, if the call returns, issues a new handle for
+  the returned value.
 - `lineage` returns immutable, registry-backed ancestry for a live handle.
 
 The callable and label arguments are checked before a claim. Once a valid
 operation claims a capability, there is no rollback. If user code raises any
-`BaseException`, or successor creation fails, the old capability remains spent
-and no usable successor is returned.
+`BaseException` during that synchronous call, or successor creation fails, the
+old capability remains spent and no usable successor is returned.
+
+Calling an asynchronous function or generator function does not execute its
+body: it returns a coroutine or generator object. `consume` returns that lazy
+object as an ordinary result, while `transition` stores it as the successor's
+ordinary payload. Later iteration, awaiting, side effects, and exceptions are
+outside the library's callback boundary. Applications that need the
+fail-closed rule to cover work must complete that work before the callback
+returns.
 
 ## Enforced invariants
 
 Under the assumptions below, the implementation enforces:
 
-1. **At-most-once library claim.** At most one `consume`, `transfer`, or
-   `transition` call can successfully claim a capability. This says nothing
+1. **At-most-once claim per handle.** At most one `consume`, `transfer`, or
+   `transition` call can successfully claim each issued handle. A transfer or
+   transition creates a new handle with a new claim; this is not a global
+   single-use rule for the underlying value. The invariant also says nothing
    about how many times the winning callback uses the released payload.
-2. **Stale-holder rejection.** After a claim, every alias of the old handle is
-   unusable.
+2. **Stale-holder rejection.** After a claim, no alias of the old handle can
+   claim authority or inspect registry-backed live-handle properties. Ordinary
+   object operations such as identity comparison and `repr` remain available.
 3. **Exact-handle custody.** Reconstructing an object with the same visible or
    private field values does not recreate authority; the live registry entry
    also binds the exact issued object identity.
@@ -47,11 +59,12 @@ Under the assumptions below, the implementation enforces:
    lock.
 5. **Reentrancy rejection.** The handle is spent before user code runs, so a
    callback cannot reenter through the same handle.
-6. **Standard duplication barriers.** `copy.copy`, `copy.deepcopy`, and the
-   standard pickle protocols are rejected explicitly.
-7. **Process binding.** A handle is valid only in its issuing process/runtime
-   epoch. A forked child removes inherited records from the active registry;
-   inherited handles fail, while newly issued child handles use a new epoch.
+6. **Standard duplication barriers.** Default `copy.copy`, `copy.deepcopy`,
+   and standard pickle protocols are rejected explicitly.
+7. **Interpreter and process binding.** A handle is valid only through its
+   issuing interpreter's registry, in its issuing process ID and runtime epoch.
+   A forked child removes inherited records from the active registry; inherited
+   handles fail, while newly issued child handles use a new epoch.
 8. **Successor ancestry.** Transfer and transition successors have a newly
    generated random 128-bit public ID, an incremented generation, and an
    immutable lineage entry that names the parent ID and operation. Global ID
@@ -69,7 +82,9 @@ processes, or an external system can independently repeat an operation.
 The guarantees apply to normal Python code that uses the public API and does
 not deliberately mutate or replace `affinecap` internals. The process,
 interpreter, imported module, and standard synchronization primitives are
-trusted. Native extensions are assumed not to corrupt Python memory.
+trusted. Native extensions are assumed not to corrupt Python memory. The API
+is called from ordinary Python execution, not a signal handler or a
+user-defined `os.register_at_fork` callback.
 
 Possession of a capability is necessary to ask this library to release its
 registered value. The library does not decide who is entitled to call `issue`;
@@ -88,11 +103,16 @@ an application must place issuance behind its own trusted validation boundary.
 - A recipient can copy references to a newly transferred handle. Those aliases
   still share one claim, but the library cannot prove which thread, component,
   person, or machine is the “real” holder.
-- Lineage is runtime-checked metadata, not a signature, durable audit log, or
-  authenticity proof. Standalone lineage tuples can be fabricated and grant no
-  authority.
+- Lineage is registry-maintained metadata, not a signature, durable audit log,
+  or authenticity proof. Standalone lineage tuples can be fabricated and grant
+  no authority. Labels are visible to any code holding a live capability and
+  must not contain secrets or other sensitive data.
 - Pickle rejection does not promise interception of every third-party
-  serializer or memory-inspection technique.
+  serializer, customized standard-library pickler, or memory-inspection
+  technique. A pre-populated `deepcopy` memo or custom pickle persistent-ID
+  hook can return an already-held live handle. That creates another ordinary
+  alias, not an independently claimable authority; all aliases share one
+  registry claim.
 - Handles do not survive interpreter shutdown or restart. There is no recovery,
   distributed consensus, cross-process transfer, crash durability, or external
   side-effect rollback.
@@ -106,7 +126,16 @@ an application must place issuance behind its own trusted validation boundary.
   inherited payload resources alive until that child shuts down.
 - Garbage-collection abandonment releases the registry's reference to a value
   on a best-effort basis. Correct resource cleanup must use explicit
-  consumption and application-level cleanup logic.
+  consumption and application-level cleanup logic. If a registered value
+  retains its own capability handle, the registry-to-value-to-handle reference
+  path keeps that handle alive, so weak-reference abandonment cannot release
+  the record. Explicit consumption is required to break that retention.
+- The API is not async-signal-safe. A Python signal handler can interrupt a
+  registry operation at an internal point, so signal handlers must not issue,
+  inspect, consume, transfer, or transition capabilities.
+- Do not call the API from another library's `os.register_at_fork` callbacks.
+  Callback registration order can cause authority issued by an earlier child
+  hook to be fenced again by `affinecap`'s own child hook.
 
 ## Why “affine-style”
 

@@ -56,7 +56,7 @@ The project's focus is the combination of:
 - dynamic stale-alias invalidation;
 - exact issued-handle registry identity;
 - PID and runtime-epoch scoping with fork invalidation;
-- explicit refusal of standard copy and pickle protocols;
+- explicit refusal of default standard copy and pickle protocols;
 - fail-closed successor transitions; and
 - local, immutable transition ancestry.
 

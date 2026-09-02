@@ -4,57 +4,116 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
 jobs:
   test:
+    name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e '.[test]'
-      - run: pytest
-      - run: python examples/minimal.py
-      - run: python examples/deployment_approval.py
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[test]'
+
+      - name: Run tests
+        run: python -m pytest
+
+      - name: Run minimal example
+        run: python examples/minimal.py
+
+      - name: Run deployment example
+        run: python examples/deployment_approval.py
 
   platform:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: python -m pip install -e '.[test]'
-      - run: pytest
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[test]'
+
+      - name: Run tests
+        run: python -m pytest
 
   quality:
+    name: Quality and packaging
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e '.[dev]'
-      - run: ruff check .
-      - run: ruff format --check .
-      - run: mypy
-      - run: python -m build
-      - run: twine check dist/*
-      - run: python -m venv /tmp/affinecap-wheel-smoke
-      - run: /tmp/affinecap-wheel-smoke/bin/python -m pip install --no-deps dist/*.whl
-      - run: |
-          cd /tmp
-          /tmp/affinecap-wheel-smoke/bin/python -c 'from affinecap import issue; assert issue(20).consume(lambda value: value + 22) == 42'
+
+      - name: Install development dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+
+      - name: Lint
+        run: python -m ruff check .
+
+      - name: Check formatting
+        run: python -m ruff format --check .
+
+      - name: Type-check
+        run: python -m mypy
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Validate distribution metadata
+        run: python -m twine check --strict dist/*
+
+      - name: Smoke-test built wheel
+        run: |
+          python -m venv "$RUNNER_TEMP/affinecap-wheel-smoke"
+          "$RUNNER_TEMP/affinecap-wheel-smoke/bin/python" -m pip install --no-deps dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/affinecap-wheel-smoke/bin/python" -c \
+            'from affinecap import issue; assert issue(20).consume(lambda value: value + 22) == 42'

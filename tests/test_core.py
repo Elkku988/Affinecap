@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import gc
 import weakref
 from typing import Any
@@ -7,6 +8,7 @@ from typing import Any
 import pytest
 
 from affinecap import (
+    Capability,
     CapabilityConsumedError,
     LineageEntry,
     issue,
@@ -23,6 +25,12 @@ def test_consume_invokes_callback_once_and_returns_its_result() -> None:
     assert calls == [21]
     with pytest.raises(CapabilityConsumedError):
         cap.consume(lambda value: value)
+
+
+def test_issue_accepts_value_as_its_public_keyword() -> None:
+    cap = issue(value="authority")
+
+    assert cap.consume(lambda value: value) == "authority"
 
 
 def test_every_alias_becomes_stale_after_consumption() -> None:
@@ -152,6 +160,59 @@ def test_failed_transition_issues_no_reusable_parent() -> None:
         cap.transfer()
 
 
+def test_async_consumer_return_is_an_ordinary_lazy_result() -> None:
+    events: list[str] = []
+    cap = issue("authority")
+
+    async def consume_later(value: str) -> str:
+        events.append(value)
+        return value.upper()
+
+    awaitable = cap.consume(consume_later)
+
+    # Calling an async function only creates its coroutine. Affinecap's claim
+    # boundary is the synchronous callback call, not its later execution.
+    assert events == []
+    with pytest.raises(CapabilityConsumedError):
+        cap.consume(lambda value: value)
+    assert asyncio.run(awaitable) == "AUTHORITY"
+    assert events == ["authority"]
+
+
+def test_lazy_transform_return_is_the_successor_payload() -> None:
+    events: list[int] = []
+    cap = issue(7)
+
+    def transform_later(value: int) -> Any:
+        def generated() -> Any:
+            events.append(value)
+            yield value + 1
+
+        return generated()
+
+    successor = cap.transition(transform_later)
+
+    assert events == []
+    generator = successor.consume(lambda value: value)
+    assert list(generator) == [8]
+    assert events == [7]
+
+
+def test_async_transform_failure_happens_after_successor_issuance() -> None:
+    cap = issue("unverified")
+
+    async def fail_later(_value: str) -> str:
+        raise ValueError("lazy verification failure")
+
+    successor = cap.transition(fail_later)
+
+    with pytest.raises(CapabilityConsumedError):
+        cap.consume(lambda value: value)
+    awaitable = successor.consume(lambda value: value)
+    with pytest.raises(ValueError, match="lazy verification failure"):
+        asyncio.run(awaitable)
+
+
 @pytest.mark.parametrize("operation", ["transfer", "transition"])
 def test_successor_issuance_failure_leaves_predecessor_spent(
     monkeypatch: pytest.MonkeyPatch, operation: str
@@ -219,6 +280,39 @@ def test_abandoning_live_handle_releases_registry_payload_reference() -> None:
 
     assert payload_ref() is not None
     del cap
+    for _ in range(3):
+        gc.collect()
+
+    assert cap_ref() is None
+    assert payload_ref() is None
+
+
+class _BackreferencingPayload:
+    def __init__(self) -> None:
+        self.capability: Capability[_BackreferencingPayload] | None = None
+
+
+def test_payload_backreference_retains_live_handle_until_explicit_claim() -> None:
+    payload = _BackreferencingPayload()
+    cap = issue(payload)
+    payload.capability = cap
+    payload_ref = weakref.ref(payload)
+    cap_ref = weakref.ref(cap)
+    del payload, cap
+
+    for _ in range(3):
+        gc.collect()
+
+    # The registry owns the payload, and the payload owns its handle. This is
+    # a supported Python reference graph, not an ownership cycle the runtime
+    # can infer or break automatically.
+    retained_cap = cap_ref()
+    assert retained_cap is not None
+    assert payload_ref() is not None
+
+    released_payload = retained_cap.consume(lambda value: value)
+    released_payload.capability = None
+    del retained_cap, released_payload
     for _ in range(3):
         gc.collect()
 

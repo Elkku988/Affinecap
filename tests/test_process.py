@@ -135,7 +135,9 @@ def test_fork_during_transition_cannot_issue_a_child_successor() -> None:
 
     def fork_transform(value: str) -> str:
         pid = os.fork()
-        if pid != 0:
+        if pid == 0:
+            signal.alarm(10)
+        else:
             child_pid.append(pid)
         return value + ":transitioned"
 

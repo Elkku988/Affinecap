@@ -2,7 +2,7 @@
 
 from affinecap import CapabilityConsumedError, issue
 
-publish = issue(lambda: "published", label="review passed")
+publish = issue(value=lambda: "published", label="review passed")
 print(publish.consume(lambda action: action()))
 
 try:
