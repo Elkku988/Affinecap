@@ -250,6 +250,7 @@ jobs:
           import json
           import os
           import pathlib
+          import time
           import urllib.error
           import urllib.request
 
@@ -259,10 +260,14 @@ jobs:
               for path in pathlib.Path("dist").iterdir()
               if path.is_file()
           }
-          url = f"https://pypi.org/pypi/affinecap/{version}/json"
+          base_url = f"https://pypi.org/pypi/affinecap/{version}/json"
           request = urllib.request.Request(
-              url,
-              headers={"User-Agent": "affinecap-release-preflight/1"},
+              f"{base_url}?preflight={time.time_ns()}",
+              headers={
+                  "Cache-Control": "no-cache",
+                  "Pragma": "no-cache",
+                  "User-Agent": "affinecap-release-preflight/1",
+              },
           )
 
           try:
@@ -313,7 +318,7 @@ jobs:
     name: Verify published artifacts
     needs: [metadata, build-and-test, publish-pypi]
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     permissions: {}
     steps:
       - name: Download distributions
@@ -346,34 +351,64 @@ jobs:
               for path in pathlib.Path("dist").iterdir()
               if path.is_file()
           }
-          url = f"https://pypi.org/pypi/affinecap/{version}/json"
-          request = urllib.request.Request(
-              url,
-              headers={"User-Agent": "affinecap-release-verifier/1"},
-          )
+          base_url = f"https://pypi.org/pypi/affinecap/{version}/json"
 
-          data = None
-          for delay in (0, 2, 4, 8, 10, 10):
-              if delay:
-                  time.sleep(delay)
+          propagation_timeout_seconds = 600
+          deadline = time.monotonic() + propagation_timeout_seconds
+          delay = 2.0
+          last_observation = "PyPI has not been queried"
+          while True:
+              request = urllib.request.Request(
+                  f"{base_url}?verify={time.time_ns()}",
+                  headers={
+                      "Cache-Control": "no-cache",
+                      "Pragma": "no-cache",
+                      "User-Agent": "affinecap-release-verifier/1",
+                  },
+              )
               try:
                   with urllib.request.urlopen(request, timeout=15) as response:
                       data = json.load(response)
-                  break
-              except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
-                  continue
-          if data is None:
-              raise SystemExit(f"PyPI did not expose affinecap {version} in time")
+              except urllib.error.HTTPError as error:
+                  transient_statuses = {404, 408, 425, 429}
+                  if error.code not in transient_statuses and not 500 <= error.code < 600:
+                      raise
+                  last_observation = f"PyPI returned HTTP {error.code}"
+              except (json.JSONDecodeError, urllib.error.URLError, TimeoutError) as error:
+                  last_observation = f"{type(error).__name__}: {error}"
+              else:
+                  remote = {
+                      item["filename"]: item["digests"]["sha256"]
+                      for item in data["urls"]
+                  }
+                  conflicts = {
+                      filename: digest
+                      for filename, digest in remote.items()
+                      if local.get(filename) != digest
+                  }
+                  if conflicts:
+                      raise SystemExit(
+                          "PyPI contains unexpected or different files for "
+                          f"affinecap {version}: {conflicts!r}"
+                      )
+                  if remote == local:
+                      break
+                  last_observation = (
+                      f"PyPI exposes {len(remote)} of {len(local)} matching files"
+                  )
 
-          remote = {
-              item["filename"]: item["digests"]["sha256"]
-              for item in data["urls"]
-          }
-          if remote != local:
-              raise SystemExit(
-                  "PyPI artifact set or SHA-256 hashes differ from this build: "
-                  f"local={local!r}, remote={remote!r}"
-              )
+              remaining = deadline - time.monotonic()
+              if remaining <= 0:
+                  raise SystemExit(
+                      f"PyPI did not expose the exact affinecap {version} "
+                      f"artifact set within {propagation_timeout_seconds} seconds; "
+                      f"{last_observation}"
+                  )
+              sleep_for = min(delay, remaining)
+              print(f"Waiting {sleep_for:.1f}s: {last_observation}", flush=True)
+              time.sleep(sleep_for)
+              delay = min(delay * 2, 15.0)
+
           print(f"Verified {len(local)} affinecap {version} artifacts on PyPI.")
           PY
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Made post-upload verification tolerate delayed PyPI API propagation while
+  remaining exact and fail-closed for unexpected filenames or differing
+  hashes.
+
 ## 0.1.1 - 2026-09-02
 
 - Prepared the initial PyPI release.
